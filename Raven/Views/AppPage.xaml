@@ -251,6 +251,12 @@
                                 <MenuFlyout x:Name="InstallButtonFlyout" FlyoutBase.ShouldConstrainToRootBounds="True" />
                             </SplitButton.Flyout>
                         </SplitButton>
+                        <CheckBox
+                            x:Name="DisableRegistrationPathCheckBox"
+                            Margin="4,0,0,0"
+                            VerticalAlignment="Center"
+                            Content="Disable registration and add to PATH"
+                            Visibility="Collapsed" />
                         <Button
                             x:Name="ShareButton"
                             x:Uid="AppPage_ShareBtn"

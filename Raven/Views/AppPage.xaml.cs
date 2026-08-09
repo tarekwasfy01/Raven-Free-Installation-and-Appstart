@@ -50,9 +50,8 @@ public sealed partial class AppPage : Page
     // Maps an internal action key to its localised display string.
     private static string GetLocalizedAction(string key) => key switch
     {
-        // Portable mode: packaged apps are downloaded, unpacked, and launched instead of registered.
-        "Install" => "Download & Run",
-        "Update" => "Update & Run",
+        "Install" => "Install",
+        "Update" => "Update",
         "Open" => "AppPage_Btn_Open".GetLocalized(),
         "Retry" => "AppPage_Btn_Retry".GetLocalized(),
         "Download" => "AppPage_Btn_Download".GetLocalized(),
@@ -162,6 +161,10 @@ public sealed partial class AppPage : Page
         // to off when the app has no download item so state never leaks between apps.
         IgnoreDependencyFilterToggle.IsChecked = downloadItem?.IgnoreDependencyFilter ?? false;
         InstallDependenciesSeparatelyToggle.IsChecked = downloadItem?.InstallDependenciesSeparately ?? false;
+        DisableRegistrationPathCheckBox.Visibility =
+            productInfo.InstallerType == InstallerType.Unpackaged
+                ? Visibility.Collapsed
+                : Visibility.Visible;
 
         if (downloadItem != null)
         {
@@ -1208,6 +1211,8 @@ public sealed partial class AppPage : Page
         var downloadManager = DownloadManagerService.Instance;
         var isUnpackaged = _currentProductInfo.InstallerType == InstallerType.Unpackaged;
         var action = CurrentActionKey;
+        var disableRegistrationAndAddToPath =
+            !isUnpackaged && DisableRegistrationPathCheckBox.IsChecked == true;
 
         // For Retry, repeat whatever the user last attempted (persisted on the DownloadItem).
         var existingItem = downloadManager.GetDownload(productId);
@@ -1397,40 +1402,68 @@ public sealed partial class AppPage : Page
                     }
                     else
                     {
-                        try
+                        var dependencyPaths = currentItem.DownloadedFiles
+                            .Where(f => !string.Equals(f.Path, mainPackagePath, StringComparison.OrdinalIgnoreCase))
+                            .Select(f => f.Path)
+                            .Where(File.Exists)
+                            .ToList();
+
+                        if (disableRegistrationAndAddToPath)
                         {
-                            UpdateService.SetDetails("Unpacking package...");
-                            DetailsText.Text = "Unpacking package...";
+                            try
+                            {
+                                UpdateService.SetDetails("Choose install folder...");
+                                DetailsText.Text = "Choose install folder...";
 
-                            var dependencyPaths = currentItem.DownloadedFiles
-                                .Where(f => !string.Equals(f.Path, mainPackagePath, StringComparison.OrdinalIgnoreCase))
-                                .Select(f => f.Path)
-                                .ToList();
+                                var result = await PortableMsixLauncher.ExtractAndLaunchAsync(
+                                    mainPackagePath,
+                                    dependencyPaths,
+                                    _currentProductInfo.Title,
+                                    productId,
+                                    _downloadCts.Token,
+                                    addToUserPath: true,
+                                    createStartMenuShortcut: true
+                                );
 
-                            var result = await PortableMsixLauncher.ExtractAndLaunchAsync(
-                                mainPackagePath,
-                                dependencyPaths,
-                                _currentProductInfo.Title,
-                                productId,
-                                _downloadCts.Token
-                            );
-
-                            UpdateService.SetDetails($"Portable folder: {result.ExtractDirectory}");
-                            DetailsText.Text = $"Portable folder: {result.ExtractDirectory}";
+                                UpdateService.SetDetails($"Portable folder: {result.ExtractDirectory}");
+                                DetailsText.Text = $"Portable folder: {result.ExtractDirectory}";
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(
+                                    ex,
+                                    "Portable extraction/launch failed | ProductId={ProductId} | Package={Package}",
+                                    productId,
+                                    mainPackagePath
+                                );
+                                await ShowErrorDialogAsync("Portable launch failed", ex.Message);
+                            }
                         }
-                        catch (Exception ex)
+                        else
                         {
-                            _logger.LogError(
-                                ex,
-                                "Portable extraction/launch failed | ProductId={ProductId} | Package={Package}",
-                                productId,
-                                mainPackagePath
-                            );
+                            try
+                            {
+                                UpdateService.SetDetails("Installing package...");
+                                DetailsText.Text = "Installing package...";
+                                var progress = new Progress<AppPackageInstaller.InstallProgress>(p =>
+                                    downloadManager.UpdateDownloadProgress(productId, Math.Clamp(p.Percent, 0, 100)));
 
-                            await ShowErrorDialogAsync(
-                                "Portable launch failed",
-                                ex.Message
-                            );
+                                await AppPackageInstaller.InstallAsync(
+                                    mainPackagePath,
+                                    dependencyPackagePaths: dependencyPaths,
+                                    progress: progress,
+                                    installDependenciesSeparately: InstallDependenciesSeparatelyToggle.IsChecked
+                                );
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, "Package installation failed | ProductId={ProductId}", productId);
+                                await InstallHelper.ShowInstallationErrorDialogAsync(
+                                    this.Content.XamlRoot,
+                                    "Install_Dialog_Title".GetLocalized(),
+                                    ex
+                                );
+                            }
                         }
                     }
                 }
